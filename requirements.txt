@@ -1,0 +1,5 @@
+# ROS2 core libraries (rclpy, sensor_msgs, std_msgs) are provided by the system ROS2 installation.
+# Built-in Python libraries (argparse, sys) require no installation.
+
+# I2C communication library for INA226 sensor
+smbus2>=0.4.2
