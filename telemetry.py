@@ -5,6 +5,7 @@ from std_msgs.msg import Float64
 import smbus2
 import argparse
 import sys
+import subprocess
 
 # Global interval variable
 GLOBAL_PUBLISH_INTERVAL = 2.0
@@ -23,6 +24,7 @@ class TelemetryNode(Node):
         self.i2c_bus_number = 7
         self.i2c_address = 0x40
         self.voltage_register = 0x02
+        self.shutdown_initiated = False
         
         try:
             self.bus = smbus2.SMBus(self.i2c_bus_number)
@@ -73,6 +75,18 @@ class TelemetryNode(Node):
             self.get_logger().error(f'Error reading temperature: {e}')
             return None
 
+    def request_system_shutdown(self):
+        if self.shutdown_initiated:
+            return
+
+        self.shutdown_initiated = True
+        self.get_logger().warn('Battery level is at or below 5%. Requesting system shutdown.')
+
+        try:
+            subprocess.run(['systemctl', 'poweroff'], check=False)
+        except Exception as e:
+            self.get_logger().error(f'Failed to request system shutdown: {e}')
+
     def publish_telemetry(self):
         # 1. Internal Temperature
         temp_celsius = self.read_internal_temp()
@@ -102,6 +116,9 @@ class TelemetryNode(Node):
             self.percentage_publisher.publish(pct_msg)
             
             self.get_logger().info(f'[Battery] Published: {v_bus:.2f}V | {pct}%')
+
+            if pct <= 5.0:
+                self.request_system_shutdown()
 
     def destroy_node(self):
         if self.bus is not None:
