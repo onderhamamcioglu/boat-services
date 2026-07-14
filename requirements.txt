@@ -3,3 +3,6 @@
 
 # I2C communication library for INA226 sensor
 smbus2>=0.4.2
+
+# UART communication with the ESC driver Arduino (motor_driver.py)
+pyserial>=3.5

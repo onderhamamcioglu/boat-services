@@ -2,43 +2,36 @@ import argparse
 import sys
 import time
 
-import Jetson.GPIO as GPIO
 import rclpy
+import serial
 from rclpy.node import Node
 from std_msgs.msg import Float64
 
 
-ESC_PIN_L = 32      # BOARD numbering; hardware-PWM capable
-ESC_PIN_R = 33      # BOARD numbering; hardware-PWM capable
-FREQ = 500          # 500 Hz -> 2 ms period
-NEUTRAL_DUTY = 75.0 # 1.5 ms pulse
-ARM_TIME_S = 3.0    # hold neutral so the ESC can arm
+DEFAULT_PORT = '/dev/ttyTHS1'  # Jetson Nano 40-pin header UART (TX pin 8, RX pin 10)
+DEFAULT_BAUD = 115200
+SEND_RATE_HZ = 20.0            # keepalive rate; Arduino failsafes to neutral after 1 s of silence
 COMMAND_TIMEOUT_S = 1.0
 
 
 class MotorDriverNode(Node):
-    def __init__(self):
+    def __init__(self, port, baud):
         super().__init__('motor_driver')
 
         self.shutdown_requested = False
         self.last_left_command_time = self.get_clock().now()
         self.last_right_command_time = self.get_clock().now()
 
-        GPIO.setmode(GPIO.BOARD)
-        GPIO.setup(ESC_PIN_L, GPIO.OUT, initial=GPIO.LOW)
-        GPIO.setup(ESC_PIN_R, GPIO.OUT, initial=GPIO.LOW)
-
-        self.pwm_left = GPIO.PWM(ESC_PIN_L, FREQ)
-        self.pwm_right = GPIO.PWM(ESC_PIN_R, FREQ)
-
-        self.pwm_left.start(NEUTRAL_DUTY)
-        self.pwm_right.start(NEUTRAL_DUTY)
+        try:
+            self.arduino = serial.Serial(port=port, baudrate=baud, timeout=0, write_timeout=0.1)
+        except serial.SerialException as error:
+            self.get_logger().fatal(f'Cannot open serial port {port}: {error}')
+            raise
 
         self.get_logger().info(
-            f'Arming ESCs at {FREQ} Hz with {NEUTRAL_DUTY}% duty for {ARM_TIME_S} seconds.'
+            f'Connected to Arduino on {port} at {baud} baud. '
+            'Listening for motor percentage commands.'
         )
-        time.sleep(ARM_TIME_S)
-        self.get_logger().info('ESCs armed. Listening for motor percentage commands.')
 
         self.left_percent = 0.0
         self.right_percent = 0.0
@@ -56,35 +49,26 @@ class MotorDriverNode(Node):
             10,
         )
 
+        self.create_timer(1.0 / SEND_RATE_HZ, self.send_motor_commands)
         self.create_timer(0.1, self.enforce_command_timeout)
 
     def clamp_percentage(self, value):
         return max(-100.0, min(100.0, float(value)))
 
-    def percentage_to_duty(self, percentage):
-        percentage = self.clamp_percentage(percentage)
-        return NEUTRAL_DUTY + (percentage * 0.25)
-
-    def set_neutral(self, pwm, motor_name):
-        pwm.ChangeDutyCycle(NEUTRAL_DUTY)
-        self.get_logger().info(f'[{motor_name}] No recent input, holding neutral duty: {NEUTRAL_DUTY:.2f}%')
-
-    def apply_motor_command(self, pwm, motor_name, percentage):
-        duty_cycle = self.percentage_to_duty(percentage)
-        pwm.ChangeDutyCycle(duty_cycle)
-        self.get_logger().info(
-            f'[{motor_name}] Command: {percentage:.2f}% -> PWM duty: {duty_cycle:.2f}%'
-        )
-
     def handle_left_command(self, msg):
         self.left_percent = self.clamp_percentage(msg.data)
         self.last_left_command_time = self.get_clock().now()
-        self.apply_motor_command(self.pwm_left, 'motor_l', self.left_percent)
 
     def handle_right_command(self, msg):
         self.right_percent = self.clamp_percentage(msg.data)
         self.last_right_command_time = self.get_clock().now()
-        self.apply_motor_command(self.pwm_right, 'motor_r', self.right_percent)
+
+    def send_motor_commands(self):
+        line = f'L:{self.left_percent:.2f},R:{self.right_percent:.2f}\n'
+        try:
+            self.arduino.write(line.encode('ascii'))
+        except serial.SerialException as error:
+            self.get_logger().error(f'Serial write failed: {error}')
 
     def enforce_command_timeout(self):
         now = self.get_clock().now()
@@ -93,43 +77,43 @@ class MotorDriverNode(Node):
         if (now - self.last_left_command_time).nanoseconds > timeout_ns:
             if self.left_percent != 0.0:
                 self.left_percent = 0.0
-                self.set_neutral(self.pwm_left, 'motor_l')
+                self.get_logger().info('[motor_l] No recent input, commanding neutral.')
             self.last_left_command_time = now
 
         if (now - self.last_right_command_time).nanoseconds > timeout_ns:
             if self.right_percent != 0.0:
                 self.right_percent = 0.0
-                self.set_neutral(self.pwm_right, 'motor_r')
+                self.get_logger().info('[motor_r] No recent input, commanding neutral.')
             self.last_right_command_time = now
 
     def destroy_node(self):
         if not self.shutdown_requested:
             self.shutdown_requested = True
             try:
-                self.pwm_left.ChangeDutyCycle(NEUTRAL_DUTY)
-                self.pwm_right.ChangeDutyCycle(NEUTRAL_DUTY)
+                self.arduino.write(b'L:0.00,R:0.00\n')
+                self.arduino.flush()
                 time.sleep(0.1)
-            except Exception:
+            except serial.SerialException:
                 pass
 
             try:
-                self.pwm_left.stop()
-                self.pwm_right.stop()
-            except Exception:
+                self.arduino.close()
+            except serial.SerialException:
                 pass
 
-            GPIO.cleanup()
-            self.get_logger().info('PWM stopped and GPIO cleaned up.')
+            self.get_logger().info('Neutral sent and serial port closed.')
 
         super().destroy_node()
 
 
 def main(args=None):
     parser = argparse.ArgumentParser(description='ROS 2 motor driver node')
-    parser.parse_known_args(args=sys.argv[1:])
+    parser.add_argument('--port', default=DEFAULT_PORT, help='Serial port of the Arduino')
+    parser.add_argument('--baud', type=int, default=DEFAULT_BAUD, help='Serial baud rate')
+    parsed_args, _ = parser.parse_known_args(args=sys.argv[1:])
 
     rclpy.init(args=args)
-    node = MotorDriverNode()
+    node = MotorDriverNode(parsed_args.port, parsed_args.baud)
 
     try:
         rclpy.spin(node)
