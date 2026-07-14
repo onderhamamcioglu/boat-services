@@ -58,10 +58,18 @@ class MotorDriverNode(Node):
     def handle_left_command(self, msg):
         self.left_percent = self.clamp_percentage(msg.data)
         self.last_left_command_time = self.get_clock().now()
+        self.get_logger().info(
+            f'[motor_l] Input: {self.left_percent:.2f}%',
+            throttle_duration_sec=1.0,
+        )
 
     def handle_right_command(self, msg):
         self.right_percent = self.clamp_percentage(msg.data)
         self.last_right_command_time = self.get_clock().now()
+        self.get_logger().info(
+            f'[motor_r] Input: {self.right_percent:.2f}%',
+            throttle_duration_sec=1.0,
+        )
 
     def send_motor_commands(self):
         line = f'L:{self.left_percent:.2f},R:{self.right_percent:.2f}\n'
