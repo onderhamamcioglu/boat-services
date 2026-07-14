@@ -1,0 +1,13 @@
+[Unit]
+Description=Motor Driver Service
+After=network.target
+
+[Service]
+Type=simple
+User=user
+ExecStart=/home/services/start_motor_driver.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

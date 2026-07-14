@@ -4,4 +4,4 @@
 source /opt/ros/humble/setup.bash
 
 # Execute the node with the desired interval argument
-python3 /home/services/start_motor_driver.py
+python3 /home/services/motor_driver.py
